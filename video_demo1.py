@@ -16,13 +16,10 @@ for w in words:
         ix2 = stoi[ch2]
         N[ix1, ix2] += 1
 
-g = torch.Generator().manual_seed(2147483647)
-p = torch.rand(3, generator=g)
-p = p / p.sum()
+itos = {i:s for s,i in stoi.items()}
 
-
+#===================================================================================================#
 # uncomment to get a visualliation of all bigrams(pairs of chars) from names dataset.
-# itos = {i:s for s,i in stoi.items()}
 # plt.figure(figsize=(16,16))
 # plt.imshow(N, cmap='Blues')
 # for i in range(27):
@@ -32,3 +29,30 @@ p = p / p.sum()
 #         plt.text(j,i, N[i, j].item(), ha="center", va="top", color='gray')
 # plt.axis('off')
 # plt.show()
+#===================================================================================================#
+
+P = N.float()
+P /= P.sum(1, keepdim=True)
+g = torch.Generator().manual_seed(2147483647)
+
+for i in range(5):
+    out=[]
+    idx = 0
+    while True:
+        p = P[idx]
+        idx = torch.multinomial(p, num_samples=1, replacement=True, generator=g).item()
+        out.append(itos[idx])
+        if idx == 0:
+            break
+    print(''.join(out))
+
+#===================================================================================================#
+#GOAL: maximize likelihood of the data w.r.t model params (statistical modeling)
+#equivalent to maximizing the log likelihood (because log is monotonic)
+#equivalent to minimizing the negative log likelihood
+#equivalent to minimizing the average negative log likelihood
+
+# log(a*b*c) = log(a) +log(b) + log(c)
+#===================================================================================================#
+
+
