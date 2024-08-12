@@ -3,6 +3,14 @@ import torch.nn.functional as F
 import matplotlib.pyplot as plt
 import random
 
+
+# Improvements from video2
+# 1. initialization of hidden layer weights and biases set all to 0,
+# so all the network start learning earlier in the training cycle
+# 2. Beware of the extreme values in you hidden layer,
+# because after activation the neuron could become unable to learn
+#  if the output is in the flat region of the actiavtion function
+
 words = open("names.txt", "r").read().splitlines()
 
 # build vocab of char to and from integers
@@ -16,6 +24,7 @@ vocab_size = len(itos)
 # build the dataset
 
 block_size = 3
+
 
 def build_dataset(words):
     X, Y = [], []
@@ -43,17 +52,20 @@ Xdev, Ydev = build_dataset(words[n1:n2])  # 10%
 Xte, Yte = build_dataset(words[n2:])  # 10%
 
 # ===================================================================================================#
-# Create Neural Network
+# Initialization
 
 n_embed = 10  # the dimensionality of the character embedding vectors
 n_hidden = 200  # the number of nuerons in the hidden layer of MLP
 
+# initialization scales
+W1i = (5/3) / ((n_embed * block_size) ** 0.5)
+
 g = torch.Generator().manual_seed(2147483647)
 C = torch.randn((vocab_size, n_embed), generator=g)
-W1 = torch.randn((n_embed * block_size, n_hidden), generator=g)
-b1 = torch.randn(n_hidden, generator=g)
-W2 = torch.randn((n_hidden, vocab_size), generator=g)
-b2 = torch.randn(vocab_size, generator=g)
+W1 = torch.randn((n_embed * block_size, n_hidden), generator=g) * W1i
+b1 = torch.randn(n_hidden, generator=g) * 0.01
+W2 = torch.randn((n_hidden, vocab_size), generator=g) * 0.01
+b2 = torch.randn(vocab_size, generator=g) * 0
 parameters = [C, W1, b1, W2, b2]
 print("Number of parameters:", sum(p.nelement() for p in parameters))
 for p in parameters:
@@ -76,6 +88,7 @@ for i in range(max_steps):
     embcat = emb.view(emb.shape[0], -1)  # Concatenate of the context embed vectors
     hpreact = embcat @ W1 + b1  # hidden layer pre activation
     h = torch.tanh(hpreact)  # activation function of hidden layer
+    # beware of you tanh outputs being close to -1 or 1, becasue the more the grandient becomes squashed
     logits = h @ W2 + b2  # output layer
     loss = F.cross_entropy(logits, Yb)  # loss function
 
@@ -94,6 +107,12 @@ for i in range(max_steps):
         print(f"{i:7d}/{max_steps:7d}: {loss.item():4f}")
     lossi.append(loss.log10().item())
 
+    # Used to show the initialization of weight and biases to avoid extreme values in hidden layer
+    # plt.figure(figsize=(20,10))
+    # # plt.imshow(h.abs() > .99, cmap='gray', interpolation='nearest')
+    # plt.hist(h.view(-1).tolist(), 50)
+    # plt.show()
+
 
 # ===================================================================================================#
 # Evaluation
@@ -109,6 +128,7 @@ def split_loss(split):
     print(split, loss.item())
 
 
+print("====Evaluation====")
 split_loss("train")
 split_loss("val")
 
@@ -118,6 +138,7 @@ split_loss("val")
 
 g = torch.Generator().manual_seed(2147483647 + 10)
 
+print("====Sample====")
 for _ in range(20):
     out = []
     context = [0] * block_size
@@ -134,5 +155,4 @@ for _ in range(20):
         # if we sample the special '.' token break
         if ix == 0:
             break
-
     print("".join(itos[i] for i in out))
