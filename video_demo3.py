@@ -10,6 +10,14 @@ import random
 # 2. Beware of the extreme values in you hidden layer,
 # because after activation the neuron could become unable to learn
 #  if the output is in the flat region of the actiavtion function
+# 3. Batch normalization creates a gausian disttribution around 0 with a 1 standard deviation
+# at initialization, which solves the issues from the 1st point.
+# Scaling allows the network to adjust as it sees fit once training has begun.
+# This also regularizes the NN, because all the example in a batch are couple mathematically.
+# This introduces some 'noise' in the outputs of the hidden layer,
+# which helps battle against overfitting.
+
+# ===================================================================================================#
 
 words = open("names.txt", "r").read().splitlines()
 
@@ -58,15 +66,24 @@ n_embed = 10  # the dimensionality of the character embedding vectors
 n_hidden = 200  # the number of nuerons in the hidden layer of MLP
 
 # initialization scales
-W1i = (5/3) / ((n_embed * block_size) ** 0.5)
+W1i = (5 / 3) / ((n_embed * block_size) ** 0.5)
 
 g = torch.Generator().manual_seed(2147483647)
 C = torch.randn((vocab_size, n_embed), generator=g)
 W1 = torch.randn((n_embed * block_size, n_hidden), generator=g) * W1i
-b1 = torch.randn(n_hidden, generator=g) * 0.01
+# hidden layer bias becomes uneccesary with batch normalization
+# b1 = torch.randn(n_hidden, generator=g) * 0.01
 W2 = torch.randn((n_hidden, vocab_size), generator=g) * 0.01
 b2 = torch.randn(vocab_size, generator=g) * 0
-parameters = [C, W1, b1, W2, b2]
+
+bngain = torch.ones((1, n_hidden))  # batch normilzation gain
+bnbias = torch.zeros((1, n_hidden))  # batch normalization bias
+
+# calculate mean and std over the entirety of training for use in eval and sampling
+bnmean_running = torch.zeroes((1, n_hidden))
+bnstd_running = torch.zeroes((1, n_hidden))
+
+parameters = [C, W1, W2, b2, bngain, bnbias]
 print("Number of parameters:", sum(p.nelement() for p in parameters))
 for p in parameters:
     p.requires_grad = True
@@ -77,6 +94,7 @@ for p in parameters:
 max_steps = 200000
 batch_size = 32
 lossi = []
+epsilon = 0.00001  # used to prevent division by zero in the batch normilzation step
 
 for i in range(max_steps):
     # mini-batch construct
@@ -86,9 +104,23 @@ for i in range(max_steps):
     # forward pass
     emb = C[Xb]  # embed the chars into vectors
     embcat = emb.view(emb.shape[0], -1)  # Concatenate of the context embed vectors
-    hpreact = embcat @ W1 + b1  # hidden layer pre activation
+    hpreact = embcat @ W1  # hidden layer pre activation
+
+    # batchNorm layer
+    bnmeani = hpreact.mean(0, keepdim=True)  # batch mean for the i-th step
+    bnstdi = hpreact.std(0, keepdim=True)  # batch std for the i-th step
+    # Normalization and scaling of the batch
+    hpreact = (bngain * bnmeani) / bnstdi + bnbias + epsilon
+    # The running mean and std will be mostly what they used to be,
+    # but will receive small changes after each mini-batch
+    # our momentum is set to 0.001 because the batch size is relatively small
+    # if the batch size were bigger a larger momentum would be acceptable
+    with torch.no_grad():
+        bnmean_running = 0.999 * bnmean_running + 0.001 * bnmeani
+        bnstd_running = 0.999 * bnstd_running + 0.001 * bnstdi
+
+    # Non-linearity
     h = torch.tanh(hpreact)  # activation function of hidden layer
-    # beware of you tanh outputs being close to -1 or 1, becasue the more the grandient becomes squashed
     logits = h @ W2 + b2  # output layer
     loss = F.cross_entropy(logits, Yb)  # loss function
 
@@ -113,6 +145,19 @@ for i in range(max_steps):
     # plt.hist(h.view(-1).tolist(), 50)
     # plt.show()
 
+# ===================================================================================================#
+# calibrate the batch norm at the end of traing for use in evaluation and sampling
+# Done in traingin loop instead
+
+# with torch.no_grad():
+#     # pass the training set through
+#     emb = C[Xtr]
+#     embcat = emb.view(emb.shape[0], -1)
+#     hpreact = embcat @ W1 + b1
+#     # measure the mean/std over the entire traingin set
+#     bnmean = hpreact.mean(0, keepdim=True)
+#     bnstd = hpreact.std(0, keepdim=True)
+
 
 # ===================================================================================================#
 # Evaluation
@@ -122,7 +167,11 @@ def split_loss(split):
     x, y = {"train": (Xtr, Ytr), "val": (Xdev, Ydev), "test": (Xte, Yte)}[split]
     emb = C[x]
     embcat = emb.view(emb.shape[0], -1)  # concat into (N, block_size * n_emb)
-    h = torch.tanh(embcat @ W1 + b1)  # (N, n_hidden)
+    hpreact = embcat @ W1
+    hpreact = (
+        bngain * (hpreact - bnmean_running) / bnstd_running + bnbias
+    )  # Use batch mean and std
+    h = torch.tanh(hpreact)
     logits = h @ W2 + b2  # (N, vocab_size)
     loss = F.cross_entropy(logits, y)
     print(split, loss.item())
@@ -144,7 +193,7 @@ for _ in range(20):
     context = [0] * block_size
     while True:
         emb = C[torch.tensor([context])]
-        h = torch.tanh(emb.view(1, -1) @ W1 + b1)
+        h = torch.tanh(emb.view(1, -1) @ W1)
         logits = h @ W2 + b2
         probs = F.softmax(logits, dim=1)
         # sample from the distribution
