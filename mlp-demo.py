@@ -6,7 +6,7 @@ import random
 
 class Linear:
     def __init__(self, fan_in, fan_out, bias=True):
-        self.weight = torch.randn((fan_in, fan_out), generator=g) / fan_in**0.5
+        self.weight = torch.randn((fan_in, fan_out), generator=g)  # / fan_in**0.5
         self.bias = torch.zeros(fan_out) if bias else None
 
     def __call__(self, x):
@@ -50,7 +50,7 @@ class BatchNorm1d:
                 self.running_var = (
                     1 - self.momentum
                 ) * self.running_var + self.momentum * xvar
-        return self.momentum
+        return self.out
 
     def parameters(self):
         return [self.gamma, self.beta]
@@ -117,25 +117,32 @@ C = torch.randn((vocab_size, n_embd), generator=g)
 
 layers = [
     Linear(n_embd * block_size, n_hidden),
+    BatchNorm1d(n_hidden),
     Tanh(),
     Linear(n_hidden, n_hidden),
+    BatchNorm1d(n_hidden),
     Tanh(),
     Linear(n_hidden, n_hidden),
+    BatchNorm1d(n_hidden),
     Tanh(),
     Linear(n_hidden, n_hidden),
+    BatchNorm1d(n_hidden),
     Tanh(),
     Linear(n_hidden, n_hidden),
+    BatchNorm1d(n_hidden),
     Tanh(),
     Linear(n_hidden, vocab_size),
+    BatchNorm1d(vocab_size),
 ]
 
 with torch.no_grad():
     # last layer: make less confident
-    layers[-1].weight *= 0.1
+    layers[-1].gamma *= 0.1
+    # layers[-1].weight *= 0.1 # switched to gamma when using batch norm
     # for all other layers apply gain
-    for layer in layers[:1]:
+    for layer in layers[:-1]:
         if isinstance(layer, Linear):
-            layer.weight *= 5 / 3
+            layer.weight *= 1  # 5 / 3
 
 parameters = [C] + [p for layer in layers for p in layer.parameters()]
 print(sum(p.nelement() for p in parameters))  # number of total params
@@ -147,6 +154,7 @@ for p in parameters:
 max_steps = 200000
 batch_size = 32
 lossi = []
+ud = []
 
 for i in range(max_steps):
     # mini-batch construct
@@ -168,7 +176,7 @@ for i in range(max_steps):
     loss.backward()
 
     # update
-    lr = 0.1 if i < 100000 else 0.01
+    lr = 1  # 0.1 if i < 100000 else 0.01
     for p in parameters:
         p.data += -lr * p.grad
 
@@ -176,8 +184,13 @@ for i in range(max_steps):
     if i % 10000 == 0:
         print(f"{i:7d}/{max_steps:7d}: {loss.item():4f}")
     lossi.append(loss.log10().item())
+    with torch.no_grad():
+        ud.append(
+            [(lr * p.grad.std() / p.data.std()).log10().item() for p in parameters]
+        )
 
-    break
+    # if i > 1000:
+    #     break
 
 # ===================================================================================================#
 # activation stats
@@ -226,4 +239,38 @@ for i in range(max_steps):
 #         legends.append(f"layer {i} ({layer.__class__.__name__})")
 # plt.legend(legends)
 # plt.title("gradient distribution")
+# plt.show()
+
+# ===================================================================================================#
+# weights stats
+
+# plt.figure(figsize=(20, 4))
+# legends = []
+# for i, p in enumerate(parameters):
+#     t = p.grad
+#     if p.ndim == 2:
+#         print(
+#             "weights %10s | mean %+f | std %e | grad:data ratio %e"
+#             % (tuple(p.shape), t.mean(), t.std(), t.std() / p.std())
+#         )
+#         hy, hx = torch.histogram(t, density=True)
+#         plt.plot(hx[:-1].detach(), hy.detach())
+#         legends.append(f"{i} {tuple(p.shape)}")
+# plt.legend(legends)
+# plt.title("gradient distribution")
+# plt.show()
+
+
+# ===================================================================================================#
+# gradient update stats
+# how fast are the gradients changing (by what amount are the values being adjusted)
+
+# plt.figure(figsize=(20, 4))
+# legends = []
+# for i, p in enumerate(parameters):
+#     if p.ndim == 2:
+#         plt.plot([ud[j][i] for j in range(len(ud))])
+#         legends.append("params %d" % i)
+# plt.plot([0, len(ud)], [-3, -3], "k") # these ratios should be roughly 1e-3 (black line on the graph)
+# plt.legend(legends)
 # plt.show()
