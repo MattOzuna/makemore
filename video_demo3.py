@@ -10,7 +10,8 @@ import random
 # 2. Beware of the extreme values in you hidden layer,
 # because after activation the neuron could become unable to learn
 #  if the output is in the flat region of the actiavtion function
-# 3. Batch normalization creates a gausian disttribution around 0 with a 1 standard deviation
+# 3. Batch normalization is used to control the activation stats.
+# It creates a gausian disttribution around 0 with a 1 standard deviation
 # at initialization, which solves the issues from the 1st point.
 # Scaling allows the network to adjust as it sees fit once training has begun.
 # This also regularizes the NN, because all the example in a batch are couple mathematically.
@@ -103,7 +104,7 @@ for i in range(max_steps):
 
     # forward pass
     emb = C[Xb]  # embed the chars into vectors
-    embcat = emb.view(emb.shape[0], -1)  # Concatenate of the context embed vectors
+    embcat = emb.view(emb.shape[0], -1)  # Concatenate of the context embed vectors (Flatten)
     hpreact = embcat @ W1  # hidden layer pre activation
 
     # batchNorm layer

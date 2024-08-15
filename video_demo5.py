@@ -3,10 +3,16 @@ import torch.nn.functional as F
 import matplotlib.pyplot as plt
 import random
 
+# initialize reproducability just once instead of using a generator
+torch.manual_seed(42)
+
+# ===================================================================================================#
+# Built calsses to mimic Pytorch layer
+
 
 class Linear:
     def __init__(self, fan_in, fan_out, bias=True):
-        self.weight = torch.randn((fan_in, fan_out), generator=g)  # / fan_in**0.5
+        self.weight = torch.randn((fan_in, fan_out)) / fan_in**0.5
         self.bias = torch.zeros(fan_out) if bias else None
 
     def __call__(self, x):
@@ -27,7 +33,7 @@ class BatchNorm1d:
         # parameters (trained with backprop)
         self.gamma = torch.ones(dim)  # gain
         self.beta = torch.zeros(dim)  # bias
-        # buffers (trained with a running 'momentum update')
+        # buffers (trained with a running 'momentum update') (exponential moving avergae)
         self.running_mean = torch.zeros(dim)
         self.running_var = torch.ones(dim)
 
@@ -65,8 +71,44 @@ class Tanh:
         return []
 
 
+class Embedding:
+    def __init__(self, num_embeddings, embedding_dim):
+        self.weight = torch.randn((num_embeddings, embedding_dim))
+
+    def __call__(self, sample):
+        self.out = self.weight[sample]
+        return self.out
+
+    def parameters(self):
+        return [self.weight]
+
+
+class Flatten:
+    def __call__(self, x):
+        self.out = x.view(x.shape[0], -1)
+        return self.out
+
+    def parameters(self):
+        return []
+
+
+class Sequential:
+    def __init__(self, layers):
+        self.layers = layers
+
+    def __call__(self, x):
+        for layer in self.layers:
+            x = layer(x)
+        self.out = x
+        return self.out
+
+    def parameters(self):
+        # get parameters of all layers and stretch them out into one list
+        return [p for layer in self.layers for p in layer.parameters()]
+
+
 # ===================================================================================================#
-# Read the words
+# Read data
 
 words = open("names.txt", "r").read().splitlines()
 
@@ -99,7 +141,6 @@ def build_dataset(words):
     return X, Y
 
 
-# shuffle the words
 random.seed(42)
 random.shuffle(words)
 
@@ -113,42 +154,26 @@ Xte, Yte = build_dataset(words[n2:])  # 10%
 # ===================================================================================================#
 # Initialization
 
-g = torch.Generator().manual_seed(2147483647)
 n_embd = 10
-n_hidden = 100
+n_hidden = 200
 
-C = torch.randn((vocab_size, n_embd), generator=g)
+model = Sequential(
+    [
+        Embedding(vocab_size, n_embd),
+        Flatten(),
+        Linear(n_embd * block_size, n_hidden, bias=False),
+        BatchNorm1d(n_hidden),
+        Tanh(),
+        Linear(n_hidden, vocab_size),
+    ]
+)
 
-layers = [
-    Linear(n_embd * block_size, n_hidden),
-    BatchNorm1d(n_hidden),
-    Tanh(),
-    Linear(n_hidden, n_hidden),
-    BatchNorm1d(n_hidden),
-    Tanh(),
-    Linear(n_hidden, n_hidden),
-    BatchNorm1d(n_hidden),
-    Tanh(),
-    Linear(n_hidden, n_hidden),
-    BatchNorm1d(n_hidden),
-    Tanh(),
-    Linear(n_hidden, n_hidden),
-    BatchNorm1d(n_hidden),
-    Tanh(),
-    Linear(n_hidden, vocab_size),
-    BatchNorm1d(vocab_size),
-]
 
 with torch.no_grad():
     # last layer: make less confident
-    layers[-1].gamma *= 0.1
-    # layers[-1].weight *= 0.1 # switched to gamma when using batch norm as the last layer
-    # for all other layers apply gain
-    for layer in layers[:-1]:
-        if isinstance(layer, Linear):
-            layer.weight *= 1  # 5 / 3
+    model.layers[-1].weight *= 0.1
 
-parameters = [C] + [p for layer in layers for p in layer.parameters()]
+parameters = model.parameters()
 print(sum(p.nelement() for p in parameters))  # number of total params
 for p in parameters:
     p.requires_grad = True
@@ -163,25 +188,20 @@ ud = []
 
 for i in range(max_steps):
     # mini-batch construct
-    ix = torch.randint(0, Xtr.shape[0], (batch_size,), generator=g)
+    ix = torch.randint(0, Xtr.shape[0], (batch_size,))
     Xb, Yb = Xtr[ix], Ytr[ix]  # batch X,Y
 
     # forward pass
-    emb = C[Xb]
-    x = emb.view(emb.shape[0], -1)  # concatenate vectors (flatten)
-    for layer in layers:
-        x = layer(x)
-    loss = F.cross_entropy(x, Yb)  # loss function
+    logits = model(Xb)
+    loss = F.cross_entropy(logits, Yb)  # loss function
 
     # backward pass
-    for layer in layers:
-        layer.out.retain_grad()  # After_debug would take out retain_graph
     for p in parameters:
         p.grad = None
     loss.backward()
 
     # update
-    lr = 1  # 0.1 if i < 100000 else 0.01
+    lr = 0.1 if i < 150000 else 0.01
     for p in parameters:
         p.data += -lr * p.grad
 
@@ -189,93 +209,54 @@ for i in range(max_steps):
     if i % 10000 == 0:
         print(f"{i:7d}/{max_steps:7d}: {loss.item():4f}")
     lossi.append(loss.log10().item())
-    with torch.no_grad():
-        ud.append(
-            [(lr * p.grad.std() / p.data.std()).log10().item() for p in parameters]
-        )
 
     # if i > 1000:
-    #     break
+    # break
 
 # ===================================================================================================#
-# activation stats
+# Evaluation
 
-# plt.figure(figsize=(20, 4))
-# legends = []
-# for i, layer in enumerate(layers[:-1]):
-#     if isinstance(layer, Tanh):
-#         t = layer.out
-#         print(
-#             "layer %d (%10s): mean %+.2f, std %.2f, saturated: %.2f%%"
-#             % (
-#                 i,
-#                 layer.__class__.__name__,
-#                 t.mean(),
-#                 t.std(),
-#                 (t.abs() > 0.97).float().mean() * 100,
-#             )
-#         )
-#         hy, hx = torch.histogram(t, density=True)
-#         plt.plot(hx[:-1].detach(), hy.detach())
-#         legends.append(f"layer {i} ({layer.__class__.__name__})")
-# plt.legend(legends)
-# plt.title("activation distribution")
-# plt.show()
+# Put layers into eval mode (needed for batchnorm layers)
+for layer in model.layers:
+    layer.training = False
+
+
+@torch.no_grad()  # this disables gradient tracking, increase efficiency
+def split_loss(split):
+    # gives different datasets depending on what you pass in
+    x, y = {"train": (Xtr, Ytr), "val": (Xdev, Ydev), "test": (Xte, Yte)}[split]
+    logits = model(x)
+    loss = F.cross_entropy(logits, y)
+    print(split, loss.item())
+
+
+print("====Evaluation====")
+split_loss("train")
+split_loss("val")
 
 # ===================================================================================================#
-# gradient stats
+# Sample from the model
 
-# plt.figure(figsize=(20, 4))
-# legends = []
-# for i, layer in enumerate(layers[:-1]):
-#     if isinstance(layer, Tanh):
-#         t = layer.out.grad
-#         print(
-#             "layer %d (%10s): mean %+f, std %e"
-#             % (
-#                 i,
-#                 layer.__class__.__name__,
-#                 t.mean(),
-#                 t.std(),
-#             )
-#         )
-#         hy, hx = torch.histogram(t, density=True)
-#         plt.plot(hx[:-1].detach(), hy.detach())
-#         legends.append(f"layer {i} ({layer.__class__.__name__})")
-# plt.legend(legends)
-# plt.title("gradient distribution")
-# plt.show()
-
-# ===================================================================================================#
-# weights stats
-
-# plt.figure(figsize=(20, 4))
-# legends = []
-# for i, p in enumerate(parameters):
-#     t = p.grad
-#     if p.ndim == 2:
-#         print(
-#             "weights %10s | mean %+f | std %e | grad:data ratio %e"
-#             % (tuple(p.shape), t.mean(), t.std(), t.std() / p.std())
-#         )
-#         hy, hx = torch.histogram(t, density=True)
-#         plt.plot(hx[:-1].detach(), hy.detach())
-#         legends.append(f"{i} {tuple(p.shape)}")
-# plt.legend(legends)
-# plt.title("gradient distribution")
-# plt.show()
+print("====Sample====")
+for _ in range(20):
+    out = []
+    context = [0] * block_size
+    while True:
+        logits = model(torch.tensor([context]))
+        probs = F.softmax(logits, dim=1)
+        # sample from the distribution
+        ix = torch.multinomial(probs, num_samples=1).item()
+        # shift the context
+        context = context[1:] + [ix]
+        out.append(ix)
+        # if we sample the special '.' token break
+        if ix == 0:
+            break
+    print("".join(itos[i] for i in out))
 
 
 # ===================================================================================================#
-# gradient update stats
-# how fast are the gradients changing (by what amount are the values being adjusted)
+# loss graph
 
-# plt.figure(figsize=(20, 4))
-# legends = []
-# for i, p in enumerate(parameters):
-#     if p.ndim == 2:
-#         plt.plot([ud[j][i] for j in range(len(ud))])
-#         legends.append("params %d" % i)
-# plt.plot([0, len(ud)], [-3, -3], "k") # these ratios should be roughly 1e-3 (black line on the graph)
-# plt.legend(legends)
-# plt.show()
+plt.plot(torch.tensor(lossi).view(-1, 1000).mean(1))
+plt.show()
