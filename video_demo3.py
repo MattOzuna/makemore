@@ -99,12 +99,16 @@ epsilon = 0.00001  # used to prevent division by zero in the batch normilzation 
 
 for i in range(max_steps):
     # mini-batch construct
+    # grabs random indexes in the training set
+
     ix = torch.randint(0, Xtr.shape[0], (batch_size,), generator=g)
     Xb, Yb = Xtr[ix], Ytr[ix]  # batch X,Y
 
     # forward pass
     emb = C[Xb]  # embed the chars into vectors
-    embcat = emb.view(emb.shape[0], -1)  # Concatenate of the context embed vectors (Flatten)
+    embcat = emb.view(
+        emb.shape[0], -1
+    )  # Concatenate of the context embed vectors (Flatten)
     hpreact = embcat @ W1  # hidden layer pre activation
 
     # batchNorm layer

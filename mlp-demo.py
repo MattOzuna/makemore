@@ -163,6 +163,7 @@ ud = []
 
 for i in range(max_steps):
     # mini-batch construct
+    # grabs random indexes in the training set
     ix = torch.randint(0, Xtr.shape[0], (batch_size,), generator=g)
     Xb, Yb = Xtr[ix], Ytr[ix]  # batch X,Y
 

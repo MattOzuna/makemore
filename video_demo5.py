@@ -17,6 +17,7 @@ class Linear:
 
     def __call__(self, x):
         self.out = x @ self.weight
+        # bias isn't need with batch norm layers
         if self.bias is not None:
             self.out += self.bias
         return self.out
@@ -40,8 +41,13 @@ class BatchNorm1d:
     def __call__(self, x):
         # calc the forward pass
         if self.training:
-            xmean = x.mean(0, keepdim=True)  # batch mean
-            xvar = x.var(0, keepdim=True)  # batch variance (standard deviation)
+            # need because we have changed our flattening layer to make the embedding layer 2 or 3 dimensions
+            if x.ndim == 2:
+                dim = 0
+            elif x.ndim == 3:
+                dim = (0, 1)
+            xmean = x.mean(dim, keepdim=True)  # batch mean
+            xvar = x.var(dim, keepdim=True)  # batch variance (standard deviation)
         else:
             xmean = self.running_mean
             xvar = self.running_var
@@ -83,9 +89,16 @@ class Embedding:
         return [self.weight]
 
 
-class Flatten:
+class FlattenConsecutive:
+    def __init__(self, n):
+        self.n = n
+
     def __call__(self, x):
-        self.out = x.view(x.shape[0], -1)
+        B, T, C = x.shape
+        x = x.view(B, T // self.n, C * self.n)
+        if x.shape[1] == 1:
+            x = x.squeeze(1)
+        self.out = x
         return self.out
 
     def parameters(self):
@@ -122,7 +135,8 @@ vocab_size = len(itos)
 # ===================================================================================================#
 # Build the dataset
 
-block_size = 3
+# context size
+block_size = 8
 
 
 def build_dataset(words):
@@ -154,14 +168,22 @@ Xte, Yte = build_dataset(words[n2:])  # 10%
 # ===================================================================================================#
 # Initialization
 
-n_embd = 10
-n_hidden = 200
+n_embd = 24
+n_hidden = 128
 
 model = Sequential(
     [
         Embedding(vocab_size, n_embd),
-        Flatten(),
-        Linear(n_embd * block_size, n_hidden, bias=False),
+        FlattenConsecutive(2),
+        Linear(n_embd * 2, n_hidden, bias=False),
+        BatchNorm1d(n_hidden),
+        Tanh(),
+        FlattenConsecutive(2),
+        Linear(n_hidden * 2, n_hidden, bias=False),
+        BatchNorm1d(n_hidden),
+        Tanh(),
+        FlattenConsecutive(2),
+        Linear(n_hidden * 2, n_hidden, bias=False),
         BatchNorm1d(n_hidden),
         Tanh(),
         Linear(n_hidden, vocab_size),
@@ -188,6 +210,7 @@ ud = []
 
 for i in range(max_steps):
     # mini-batch construct
+    # grabs random indexes in the training set
     ix = torch.randint(0, Xtr.shape[0], (batch_size,))
     Xb, Yb = Xtr[ix], Ytr[ix]  # batch X,Y
 
@@ -211,7 +234,7 @@ for i in range(max_steps):
     lossi.append(loss.log10().item())
 
     # if i > 1000:
-    # break
+    #     break
 
 # ===================================================================================================#
 # Evaluation

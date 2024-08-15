@@ -118,6 +118,7 @@ loss_tracking = 0
 
 for i in range(50000):
     # mini-batch construct
+    # grabs random indexes int he training loop
     ix = torch.randint(0, Xtr.shape[0], (32,))
 
     # forward pass
